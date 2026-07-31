@@ -70,7 +70,7 @@ export function renderReport(jsonData) {
     <div class="field-grid">
       ${field('Main meter (desplegable)', '← Seleccionar el analizador de redes del punto de frontera')}
       ${field('Grid connection type (desplegable)', baseConfig.vm_grid_connection_type)}
-      ${field('Import limit (kW)', (pc ? Math.max(...Object.values(pc)) : '—') + ' kW')}
+      ${field('Import limit (kW)', '<strong>' + num(baseConfig.vm_import_limit || (pc ? Math.max(...Object.values(pc)) : 0)) + ' kW</strong>')}
       ${field('Export limit (kW)', num(baseConfig.vm_grid_export_limit) + ' kW')}
       ${field('Import safety margin (kW)', num(baseConfig.vm_import_safety_margin) + ' kW')}
       ${field('Export safety margin (kW)', '0 kW')}
@@ -81,6 +81,11 @@ export function renderReport(jsonData) {
     <div class="field-grid">
       ${field('Selector', hasPcChanges ? '→ Scheduled for later execution' : '→ Applied immediately')}
     </div>
+    ${baseConfig.vm_import_limit_from_curves
+      ? '<div class="alert alert-i">📊 <strong>Import limit basado en análisis de curvas reales.</strong> ' + baseConfig.vm_import_limit_reason + '</div>'
+      : baseConfig.vm_import_limit_warning
+        ? '<div class="alert alert-w">⚠️ ' + baseConfig.vm_import_limit_reason + '</div>'
+        : '<div class="alert alert-i">ℹ️ ' + (baseConfig.vm_import_limit_reason || 'Import limit = potencia contratada.') + '</div>'}
     ${baseConfig.vm_grid_export_limit === 0 ? '<div class="alert alert-i">ℹ️ Export limit = 0 kW → <strong>inyección cero</strong>. El EMS recortará la FV si hay exceso.</div>' : ''}
   </div>
 
@@ -122,19 +127,35 @@ export function renderReport(jsonData) {
   </div>`;
 
   // Contract-specific fields
-  if (baseConfig.fixed_prices && baseConfig.vm_contract_type === 'Fixed (Spain \u2014 time-of-use)') {
+  if (baseConfig.fixed_prices && baseConfig.vm_contract_type === 'Fixed (Spain — time-of-use)') {
+    const bd = baseConfig.fixed_prices_breakdown;
+    const periods = ['P1', 'P2', 'P3', 'P4', 'P5', 'P6'];
     html += `<div class="step">
-    ${step(4, 'Sub-campos: Fixed (Spain \u2014 time-of-use)')}
+    ${step(4, 'Sub-campos: Fixed (Spain — time-of-use)')}
     <p class="step-location">Energy contract → <strong>aparecen al seleccionar Fixed Spain TOU</strong></p>
-    <p class="step-desc">Al seleccionar este tipo, aparecen 6 campos de precio. Introducir en <strong>€/MWh</strong>:</p>
+    <p class="step-desc">⚠️ <strong>Voltmasters NO suma peajes ni cargos automáticamente.</strong> Los precios deben incluir el coste TOTAL: Energía + Peajes + Cargos. Introducir en <strong>€/MWh</strong>:</p>
+
     <div class="field-grid">
-      ${field('P1 Price (€/MWh número)', baseConfig.fixed_prices.P1.toFixed(2))}
-      ${field('P2 Price (€/MWh número)', baseConfig.fixed_prices.P2.toFixed(2))}
-      ${field('P3 Price (€/MWh número)', baseConfig.fixed_prices.P3.toFixed(2))}
-      ${field('P4 Price (€/MWh número)', baseConfig.fixed_prices.P4.toFixed(2))}
-      ${field('P5 Price (€/MWh número)', baseConfig.fixed_prices.P5.toFixed(2))}
-      ${field('P6 Price (€/MWh número)', baseConfig.fixed_prices.P6.toFixed(2))}
+      ${periods.map(p => field(p + ' Price (€/MWh número)', '<strong>' + baseConfig.fixed_prices[p].toFixed(2) + '</strong>')).join('\n      ')}
     </div>
+
+    ${bd ? `<h3>📊 Desglose del precio total por periodo</h3>
+    <table>
+      <thead><tr><th>Periodo</th><th>Energía</th><th>Peajes</th><th>Cargos</th><th>⭐ TOTAL → VM</th></tr></thead>
+      <tbody>
+        ${periods.map(p => `<tr>
+          <td>${pbadge(p)}</td>
+          <td><code>${bd[p].energia.toFixed(2)}</code> €/MWh</td>
+          <td><code>${bd[p].peaje.toFixed(2)}</code> €/MWh</td>
+          <td><code>${bd[p].cargo.toFixed(2)}</code> €/MWh</td>
+          <td><strong><code>${bd[p].total.toFixed(2)}</code> €/MWh</strong></td>
+        </tr>`).join('')}
+      </tbody>
+    </table>` : ''}
+
+    ${baseConfig.fixed_prices_uses_regulated
+      ? '<div class="alert alert-w">⚠️ <strong>Peajes y cargos estimados con valores regulados BOE' + (baseConfig.fixed_prices_tarifa ? ' para tarifa ' + baseConfig.fixed_prices_tarifa : '') + '.</strong> No se encontró <code>cavo_facturacion.csv</code>. Para mayor precisión, incluir el archivo de facturación en la carpeta de entrada. Estos valores deben verificarse con CNMC (peajes) y Orden TED (cargos).</div>'
+      : '<div class="alert alert-i">✅ Peajes y cargos extraídos de <code>cavo_facturacion.csv</code> (fuente exacta de la simulación ROI).</div>'}
     <div class="alert alert-i">ℹ️ <strong>Inyección = 0 €/MWh</strong> (bloqueado automáticamente por la plataforma). La batería solo descarga para cubrir consumo propio.</div>
     ${baseConfig.vm_excedentes_conflict ? '<div class="alert alert-w">⚠️ <strong>CONFLICTO:</strong> Este cliente tiene un precio de excedentes pactado (' + (baseConfig.precio_excedentes * 1000).toFixed(1) + ' €/MWh), pero <code>Fixed Spain TOU</code> bloquea la inyección a 0 €/MWh. Voltmasters nunca venderá energía proactivamente. Regla de negocio CAVO: en 6.1 TD priorizamos periodos P1-P6 sobre venta de excedentes.</div>' : ''}
   </div>`;
@@ -196,7 +217,7 @@ export function renderReport(jsonData) {
       ${baseConfig.vm_peak_shaving_reserve > 0 ? '⚠️' : 'ℹ️'} <strong>Peak shaving reserve = ${baseConfig.vm_peak_shaving_reserve}%</strong> — ${baseConfig.vm_peak_shaving_reason}
     </div>
     ${!baseConfig.vm_battery_injection && baseConfig.vm_grid_export_limit === 0 ? '<div class="alert alert-i">ℹ️ <strong>Selling via battery injection = Disable</strong> porque Export limit = 0 kW (inyección cero).</div>' : ''}
-    ${!baseConfig.vm_battery_injection && baseConfig.vm_contract_type === 'Fixed (Spain \u2014 time-of-use)' ? '<div class="alert alert-i">ℹ️ Fixed Spain TOU → inyección = 0 €/MWh. Activar Selling no tendría efecto (nunca supera min price difference).</div>' : ''}
+    ${!baseConfig.vm_battery_injection && baseConfig.vm_contract_type === 'Fixed (Spain — time-of-use)' ? '<div class="alert alert-i">ℹ️ Fixed Spain TOU → inyección = 0 €/MWh. Activar Selling no tendría efecto (nunca supera min price difference).</div>' : ''}
   </div>
 </div>`;
 
@@ -376,8 +397,8 @@ export function renderReport(jsonData) {
       ${field('Nominal power (kW número)', '(demanda esperada en kW)')}
       ${field('Start time (selector hora)', '(hora de inicio del evento)')}
       ${field('Duration (número h/min)', '(duración estimada)')}
-      ${field('Recurrence (desplegable)', 'Once/None \u00b7 Daily \u00b7 Weekly')}
-      ${field('\u2514 Weekdays (checkbox, si Weekly)', 'Mon Tue Wed Thu Fri Sat Sun')}
+      ${field('Recurrence (desplegable)', 'Once/None · Daily · Weekly')}
+      ${field('└ Weekdays (checkbox, si Weekly)', 'Mon Tue Wed Thu Fri Sat Sun')}
     </div>`}
   </div>
 </div>`;
@@ -392,8 +413,8 @@ export function renderReport(jsonData) {
     <tr><td>Contrato</td><td><strong><code>${baseConfig.vm_contract_type}</code></strong></td></tr>
     <tr><td>Grid import limit</td><td><strong><code>${pc ? (hasPcChanges ? 'Variable por temporada (ver Fase 5)' : Object.values(pc)[0] + ' kW') : '—'}</code></strong></td></tr>
     <tr><td>Grid export limit</td><td><strong><code>${num(baseConfig.vm_grid_export_limit)} kW</code></strong></td></tr>
-    <tr><td>SOC</td><td><strong><code>${num(baseConfig.vm_min_soc)}% \u2013 ${num(baseConfig.vm_max_soc)}%</code></strong></td></tr>
-    <tr><td>Min price difference</td><td><strong><code>${num(baseConfig.vm_min_price_diff)} \u20ac/MWh</code></strong></td></tr>
+    <tr><td>SOC</td><td><strong><code>${num(baseConfig.vm_min_soc)}% – ${num(baseConfig.vm_max_soc)}%</code></strong></td></tr>
+    <tr><td>Min price difference</td><td><strong><code>${num(baseConfig.vm_min_price_diff)} €/MWh</code></strong></td></tr>
     <tr><td>Peak shaving reserve</td><td><strong><code>${baseConfig.vm_peak_shaving_reserve}%</code></strong></td></tr>
     <tr><td>Battery injection</td><td><strong><code>${baseConfig.vm_battery_injection ? 'ON' : 'OFF'}</code></strong></td></tr>
     ${baseConfig.vm_battery_load_balancing ? `<tr><td>Load balancing</td><td><strong><code>${baseConfig.vm_battery_load_balancing}</code></strong></td></tr>` : ''}
@@ -412,7 +433,7 @@ export function renderReport(jsonData) {
 
   // Footer
   html += `<div class="footer">
-  Generado automáticamente — CAVO Energías \u00b7 Generador de Configuración Voltmasters<br>
+  Generado automáticamente — CAVO Energías · Generador de Configuración Voltmasters<br>
   ${new Date().toLocaleString('es-ES')}
 </div>`;
 
@@ -430,18 +451,18 @@ function renderPeriodSection(periodData) {
   <div class="section-hdr"><div class="icon">⏱️</div><h2>Comportamiento de la Batería por Periodo Tarifario</h2></div>
   <p class="section-desc">Qué hace <strong>exactamente</strong> la batería durante cada periodo tarifario según la simulación.</p>
   <table>
-    <thead><tr><th>Periodo</th><th>Acción</th><th>Carga</th><th>Descarga</th><th>Fuente carga</th><th>Peak \u0394</th><th>Horas carg.</th><th>Horas desc.</th><th>Precio</th></tr></thead>
+    <thead><tr><th>Periodo</th><th>Acción</th><th>Carga</th><th>Descarga</th><th>Fuente carga</th><th>Peak Δ</th><th>Horas carg.</th><th>Horas desc.</th><th>Precio</th></tr></thead>
     <tbody>
       ${periodData.map(p => `<tr>
-        <td>${pbadge(p.period)} <small>(${p.hours}h/a\u00f1o)</small></td>
+        <td>${pbadge(p.period)} <small>(${p.hours}h/año)</small></td>
         <td><span class="op-badge" style="--c:${p.behaviorColor}">${p.behavior}</span></td>
         <td><code>${num(p.cargaTotal)}</code> kWh</td>
         <td><code>${num(p.descarga)}</code> kWh</td>
         <td>${p.pctFV}% FV / ${100 - p.pctFV}% Red</td>
-        <td>${p.peakDelta > 0 ? `<strong>${p.picoSQ} \u2192 ${p.picoBESS} kW</strong> (\u2212${p.peakDelta})` : `${p.picoSQ} kW (sin cambio)`}</td>
-        <td><small>${p.topCharge.map(x => x.h + 'h').join(', ') || '\u2014'}</small></td>
-        <td><small>${p.topDischarge.map(x => x.h + 'h').join(', ') || '\u2014'}</small></td>
-        <td><small>${(p.avgPrecio * 1000).toFixed(1)} \u20ac/MWh</small></td>
+        <td>${p.peakDelta > 0 ? `<strong>${p.picoSQ} → ${p.picoBESS} kW</strong> (−${p.peakDelta})` : `${p.picoSQ} kW (sin cambio)`}</td>
+        <td><small>${p.topCharge.map(x => x.h + 'h').join(', ') || '—'}</small></td>
+        <td><small>${p.topDischarge.map(x => x.h + 'h').join(', ') || '—'}</small></td>
+        <td><small>${(p.avgPrecio * 1000).toFixed(1)} €/MWh</small></td>
       </tr>`).join('')}
     </tbody>
   </table>
@@ -449,22 +470,22 @@ function renderPeriodSection(periodData) {
 
   // Detail cards
   html += `<div class="section">
-  <div class="section-hdr"><div class="icon">🔍</div><h2>Detalle por Periodo \u2014 Qué debe hacer el EMS</h2></div>
+  <div class="section-hdr"><div class="icon">🔍</div><h2>Detalle por Periodo — Qué debe hacer el EMS</h2></div>
   <p class="section-desc">Descripción detallada de la operación objetivo en cada periodo.</p>
   ${periodData.map(p => `
   <div class="config-card" style="--accent-color:${p.behaviorColor}">
     <div class="config-header">
       <div>
-        <span class="config-date">${pbadge(p.period)} \u2014 ${p.behavior}</span>
-        <span class="config-months">${p.hours} horas/a\u00f1o \u00b7 ${(p.avgPrecio * 1000).toFixed(1)} \u20ac/MWh</span>
+        <span class="config-date">${pbadge(p.period)} — ${p.behavior}</span>
+        <span class="config-months">${p.hours} horas/año · ${(p.avgPrecio * 1000).toFixed(1)} €/MWh</span>
       </div>
     </div>
     <p class="config-desc">${p.descripcion}</p>
     <div class="config-summary">
-      <span>\u2b06\ufe0f Carga: <strong>${num(p.cargaTotal)} kWh</strong> (${p.pctFV}% FV)</span>
-      <span>\u2b07\ufe0f Descarga: <strong>${num(p.descarga)} kWh</strong></span>
-      <span>\u26a1 Pico: <strong>${p.picoSQ} \u2192 ${p.picoBESS} kW</strong></span>
-      <span>\ud83d\udd50 Carg: ${p.hCarga}h \u00b7 Desc: ${p.hDescarga}h \u00b7 Idle: ${p.hIdle}h</span>
+      <span>⬆️ Carga: <strong>${num(p.cargaTotal)} kWh</strong> (${p.pctFV}% FV)</span>
+      <span>⬇️ Descarga: <strong>${num(p.descarga)} kWh</strong></span>
+      <span>⚡ Pico: <strong>${p.picoSQ} → ${p.picoBESS} kW</strong></span>
+      <span>🕐 Carg: ${p.hCarga}h · Desc: ${p.hDescarga}h · Idle: ${p.hIdle}h</span>
     </div>
   </div>`).join('')}
 </div>`;
@@ -475,38 +496,38 @@ function renderPeriodSection(periodData) {
 function renderReserveSection(reserveData, baseConfig) {
   if (!reserveData || reserveData.length === 0) return '';
   const TCOL = { OK: '#059669', RESERVE: '#dc2626' };
-  const TICON = { OK: '\u2705', RESERVE: '\u26a0\ufe0f' };
+  const TICON = { OK: '✅', RESERVE: '⚠️' };
   const TLABEL = { OK: 'Sin acción', RESERVE: 'Peak Shaving Reserve' };
 
   const needsReserve = reserveData.some(r => r.type === 'RESERVE');
   const maxReserve = Math.max(0, ...reserveData.filter(r => r.type === 'RESERVE').map(r => r.reservePct));
 
   let html = `<div class="section section-highlight">
-  <div class="section-hdr"><div class="icon">�\udee1\ufe0f</div><h2>Análisis de Reserva de Energía (Peak Shaving Reserve)</h2></div>
-  <p class="section-desc">\u00bfSe vacía la batería antes de los picos de demanda? <strong>Nota:</strong> Consumption Planning NO protege picos de potencia \u2014 solo Peak Shaving Reserve lo garantiza.</p>
+  <div class="section-hdr"><div class="icon">🛡️</div><h2>Análisis de Reserva de Energía (Peak Shaving Reserve)</h2></div>
+  <p class="section-desc">¿Se vacía la batería antes de los picos de demanda? <strong>Nota:</strong> Consumption Planning NO protege picos de potencia — solo Peak Shaving Reserve lo garantiza.</p>
 
-  ${needsReserve ? '<div class="alert alert-w">\u26a0\ufe0f <strong>Se recomienda Peak shaving reserve = ' + maxReserve + '%</strong> en Settings \u2192 Strategy \u2192 Peak shaving reserve.</div>' : ''}
-  ${!needsReserve ? '<div class="alert alert-i">\u2705 <strong>Peak shaving reserve = 0% es correcto</strong> para toda la instalación.</div>' : ''}
+  ${needsReserve ? '<div class="alert alert-w">⚠️ <strong>Se recomienda Peak shaving reserve = ' + maxReserve + '%</strong> en Settings → Strategy → Peak shaving reserve.</div>' : ''}
+  ${!needsReserve ? '<div class="alert alert-i">✅ <strong>Peak shaving reserve = 0% es correcto</strong> para toda la instalación.</div>' : ''}
 
   <table>
     <thead><tr><th>Mes</th><th>Acción</th><th>Peak shaving</th><th>Doble ciclo</th><th>Días vacía</th><th>Carga red</th><th>Configuración VM</th></tr></thead>
     <tbody>
       ${reserveData.map(r => `<tr>
         <td><strong>${r.name}</strong></td>
-        <td><span class="op-badge" style="--c:${TCOL[r.type] || '#6b7280'}">${TICON[r.type] || '\u2014'} ${TLABEL[r.type] || r.type}</span></td>
-        <td>${r.doesPS ? '<strong>' + r.maxSQ + ' \u2192 ' + r.maxBESS + ' kW</strong> (\u2212' + r.peakDelta + ')' : '<small>No recorta</small>'}</td>
-        <td>${r.doubleCycle ? '\u26a1 Sí (' + r.chargeHrs.join(',') + 'h \u2192 ' + r.dischargeHrs.join(',') + 'h)' : 'No'}</td>
+        <td><span class="op-badge" style="--c:${TCOL[r.type] || '#6b7280'}">${TICON[r.type] || '—'} ${TLABEL[r.type] || r.type}</span></td>
+        <td>${r.doesPS ? '<strong>' + r.maxSQ + ' → ' + r.maxBESS + ' kW</strong> (−' + r.peakDelta + ')' : '<small>No recorta</small>'}</td>
+        <td>${r.doubleCycle ? '⚡ Sí (' + r.chargeHrs.join(',') + 'h → ' + r.dischargeHrs.join(',') + 'h)' : 'No'}</td>
         <td>${r.emptyBefore > 0 ? '<strong>' + r.emptyBefore + '/' + r.totalDays + '</strong> (' + r.riskPct + '%)' : '0/' + r.totalDays}</td>
-        <td>${r.gridCh.length > 0 ? r.gridCh.map(h => h + 'h').join(', ') : '\u2014'}</td>
+        <td>${r.gridCh.length > 0 ? r.gridCh.map(h => h + 'h').join(', ') : '—'}</td>
         <td><small>${r.rec}</small></td>
       </tr>`).join('')}
     </tbody>
   </table>
 
   ${needsReserve ? `<div class="step">
-    <div class="step-num">\u26a1</div><div class="step-title">Campo a configurar</div>
-    <p class="step-desc"><strong>Peak shaving reserve:</strong></p><div class="field-grid">${field('Peak shaving reserve (% SoC)', maxReserve + '% \u2192 Settings \u2192 Strategy \u2192 Peak shaving reserve')}</div>
-    <p class="step-desc">Reserva un ${maxReserve}% del SOC exclusivamente para recortar picos. Este es el <strong>\u00fanico mecanismo fiable</strong> en Voltmasters para garantizar energía disponible para peak shaving.</p>
+    <div class="step-num">⚡</div><div class="step-title">Campo a configurar</div>
+    <p class="step-desc"><strong>Peak shaving reserve:</strong></p><div class="field-grid">${field('Peak shaving reserve (% SoC)', maxReserve + '% → Settings → Strategy → Peak shaving reserve')}</div>
+    <p class="step-desc">Reserva un ${maxReserve}% del SOC exclusivamente para recortar picos. Este es el <strong>único mecanismo fiable</strong> en Voltmasters para garantizar energía disponible para peak shaving.</p>
   </div>` : ''}
 </div>`;
   return html;
@@ -518,13 +539,13 @@ function renderSavingsSection(baseConfig) {
   if (totalAhorro <= 0) return '';
   const pct = v => totalAhorro > 0 ? (v / totalAhorro * 100).toFixed(0) : '0';
   return `<div class="section">
-  <div class="section-hdr"><div class="icon">�\udcb6</div><h2>Anexo A \u2014 Desglose del Ahorro (${num(baseConfig.ahorro_eur, 0)} \u20ac/a\u00f1o)</h2></div>
+  <div class="section-hdr"><div class="icon">💶</div><h2>Anexo A — Desglose del Ahorro (${num(baseConfig.ahorro_eur, 0)} €/año)</h2></div>
   <table>
     <thead><tr><th>Concepto</th><th>Ahorro</th><th>%</th><th>Descripción</th></tr></thead>
     <tbody>
-      <tr><td>\u2600\ufe0f Autoconsumo FV</td><td><code>${num(baseConfig.ahorro_fv, 0)} \u20ac</code></td><td>${pct(baseConfig.ahorro_fv)}%</td><td><small>${baseConfig.ahorro_fv_desc || 'Almacena excedentes solares para consumo posterior'}</small></td></tr>
-      <tr><td>\ud83d\udcca Arbitraje</td><td><code>${num(baseConfig.ahorro_arbitraje, 0)} \u20ac</code></td><td>${pct(baseConfig.ahorro_arbitraje)}%</td><td><small>${baseConfig.ahorro_arb_desc || 'Carga en horas baratas, descarga en horas caras'}</small></td></tr>
-      <tr><td>\u26a1 Peak Shaving</td><td><code>${num(baseConfig.ahorro_peak_shaving, 0)} \u20ac</code></td><td>${pct(baseConfig.ahorro_peak_shaving)}%</td><td><small>${baseConfig.ahorro_ps_desc || 'Reducción de potencia contratada'}</small></td></tr>
+      <tr><td>☀️ Autoconsumo FV</td><td><code>${num(baseConfig.ahorro_fv, 0)} €</code></td><td>${pct(baseConfig.ahorro_fv)}%</td><td><small>${baseConfig.ahorro_fv_desc || 'Almacena excedentes solares para consumo posterior'}</small></td></tr>
+      <tr><td>📊 Arbitraje</td><td><code>${num(baseConfig.ahorro_arbitraje, 0)} €</code></td><td>${pct(baseConfig.ahorro_arbitraje)}%</td><td><small>${baseConfig.ahorro_arb_desc || 'Carga en horas baratas, descarga en horas caras'}</small></td></tr>
+      <tr><td>⚡ Peak Shaving</td><td><code>${num(baseConfig.ahorro_peak_shaving, 0)} €</code></td><td>${pct(baseConfig.ahorro_peak_shaving)}%</td><td><small>${baseConfig.ahorro_ps_desc || 'Reducción de potencia contratada'}</small></td></tr>
     </tbody>
   </table>
 </div>`;
@@ -534,7 +555,7 @@ function renderSavingsSection(baseConfig) {
 function renderMonthlySection(monthly) {
   if (!monthly || monthly.length === 0) return '';
   return `<div class="section">
-  <div class="section-hdr"><div class="icon">�\udcc8</div><h2>Anexo B \u2014 Operación Mensual de la Batería</h2></div>
+  <div class="section-hdr"><div class="icon">📈</div><h2>Anexo B — Operación Mensual de la Batería</h2></div>
   <table>
     <thead><tr><th>Mes</th><th>Tipo</th><th>Pico SQ</th><th>Pico BESS</th><th>% FV</th><th>Ciclos</th><th>Spread</th><th>Carga</th><th>Descarga</th></tr></thead>
     <tbody>
@@ -543,7 +564,7 @@ function renderMonthlySection(monthly) {
         <td><span class="op-badge" style="--c:${m.color}">${m.tipo}</span></td>
         <td>${num(m.picoSQ)} kW</td><td>${num(m.picoBESS)} kW</td>
         <td>${num(m.pctFV, 0)}%</td><td>${num(m.ciclos, 1)}</td>
-        <td>${num(m.spread * 1000, 1)} \u20ac/MWh</td>
+        <td>${num(m.spread * 1000, 1)} €/MWh</td>
         <td><small>${m.chargeHours.map(x => x.h + 'h').join(', ')}</small></td>
         <td><small>${m.dischargeHours.map(x => x.h + 'h').join(', ')}</small></td>
       </tr>`).join('')}
@@ -575,8 +596,8 @@ function renderHeatmap(monthly) {
     heatSvg += `<text x="36" y="${22 + h * cellH}" text-anchor="end" font-size="7" fill="#9ca3af">${h}h</text>`;
   }
   return `<div class="section">
-  <div class="section-hdr"><div class="icon">�\uddfa\ufe0f</div><h2>Anexo C \u2014 Mapa de Calor</h2></div>
-  <p class="section-desc"><span style="color:#059669">\u25a0 Carga</span> \u00b7 <span style="color:#dc2626">\u25a0 Descarga</span></p>
+  <div class="section-hdr"><div class="icon">🗺️</div><h2>Anexo C — Mapa de Calor</h2></div>
+  <p class="section-desc"><span style="color:#059669">■ Carga</span> · <span style="color:#dc2626">■ Descarga</span></p>
   <div class="heatmap-wrap"><svg viewBox="0 0 740 180">${heatSvg}</svg></div>
 </div>`;
 }
@@ -596,16 +617,16 @@ export function getReportCSS() { return `
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.7}
 
-/* \u2500\u2500 Report Header \u2500\u2500 */
+/* ── Report Header ── */
 .report-header{background:linear-gradient(180deg,#fff,var(--bg));border-bottom:2px solid var(--accent);padding:2rem 2rem 1.5rem;text-align:center}
 .report-header h1{font-size:1.5rem;font-weight:800;letter-spacing:-.5px;color:var(--accent)}
 .subtitle{font-size:.88rem;color:var(--text2);margin-top:.4rem}
 .meta-row{font-size:.74rem;color:var(--muted);margin-top:.8rem;display:flex;gap:1.2rem;justify-content:center;flex-wrap:wrap;background:var(--accent);color:#fff;padding:.6rem 1rem;border-radius:6px;font-weight:600}
 
-/* \u2500\u2500 Layout \u2500\u2500 */
+/* ── Layout ── */
 .container{max-width:1100px;margin:0 auto;padding:1.5rem 2rem}
 
-/* \u2500\u2500 Sections \u2500\u2500 */
+/* ── Sections ── */
 .section{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:1.5rem 1.8rem;margin-bottom:1.2rem}
 .section-highlight{border-left:4px solid var(--accent)}
 .section-hdr{display:flex;align-items:center;gap:.6rem;margin-bottom:.8rem;padding-bottom:.5rem;border-bottom:1px solid var(--border)}
@@ -614,7 +635,7 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans
 .section-desc{font-size:.78rem;color:var(--text2);margin-bottom:.8rem}
 h3{font-size:.88rem;font-weight:600;color:var(--accent);margin:1rem 0 .5rem}
 
-/* \u2500\u2500 Tables \u2500\u2500 */
+/* ── Tables ── */
 table{width:100%;border-collapse:collapse;font-size:.78rem;border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:.5rem}
 thead{background:var(--th)} th{padding:.5rem .7rem;text-align:left;font-weight:600;font-size:.68rem;text-transform:uppercase;letter-spacing:.04em;color:var(--text2);border-bottom:1px solid var(--border);white-space:nowrap}
 td{padding:.45rem .7rem;border-bottom:1px solid rgba(213,217,224,.4)} td strong{color:var(--accent);font-weight:600}
@@ -622,15 +643,15 @@ td code{background:var(--vm-input-bg);color:var(--accent);padding:2px 8px;border
 .path{font-size:.66rem;color:var(--muted);font-style:italic}
 tr:nth-child(even){background:var(--row2)} tr:nth-child(odd){background:var(--row)} tr:last-child td{border-bottom:none}
 
-/* \u2500\u2500 Alerts \u2500\u2500 */
+/* ── Alerts ── */
 .alert{border-radius:8px;padding:.6rem .8rem;margin:.5rem 0;font-size:.76rem;display:flex;align-items:flex-start;gap:.4rem;line-height:1.5}
 .alert-w{background:#fffbeb;border:1px solid #fde68a;color:#92400e;border-left:4px solid #ffc107}
 .alert-i{background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af;border-left:4px solid #3b82f6}
 
-/* \u2500\u2500 Badges \u2500\u2500 */
+/* ── Badges ── */
 .op-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.68rem;font-weight:600;background:color-mix(in srgb,var(--c) 12%,transparent);color:var(--c);border:1px solid color-mix(in srgb,var(--c) 35%,transparent)}
 
-/* \u2500\u2500 Config Cards (Period Detail) \u2500\u2500 */
+/* ── Config Cards (Period Detail) ── */
 .config-card{border:1px solid var(--border);border-radius:10px;padding:1rem 1.2rem;margin-bottom:1rem;border-left:4px solid var(--accent-color);background:var(--row)}
 .config-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:.4rem}
 .config-date{font-weight:700;font-size:.9rem}
@@ -645,40 +666,40 @@ tr:nth-child(even){background:var(--row2)} tr:nth-child(odd){background:var(--ro
 .setting-reason{font-size:.72rem;color:var(--text2);margin-top:.15rem}
 .config-summary{display:flex;gap:1rem;margin-top:.6rem;font-size:.72rem;color:var(--muted)}
 
-/* \u2500\u2500 Heatmap \u2500\u2500 */
+/* ── Heatmap ── */
 .heatmap-wrap{overflow-x:auto;background:var(--row);border:1px solid var(--border);border-radius:8px;padding:.8rem}
 .heatmap-wrap svg{width:100%;max-width:740px;height:auto}
 
-/* \u2500\u2500 Footer \u2500\u2500 */
+/* ── Footer ── */
 .footer{margin-top:2rem;padding:1rem 0;border-top:1px solid var(--border);text-align:center;color:var(--muted);font-size:.68rem}
 
-/* \u2500\u2500 Print Button \u2500\u2500 */
+/* ── Print Button ── */
 .print-btn{position:fixed;bottom:1.5rem;right:1.5rem;background:var(--accent);color:#fff;border:none;border-radius:50px;padding:.6rem 1.2rem;font-size:.78rem;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;z-index:100;box-shadow:0 2px 8px rgba(37,99,235,.3)}
 .print-btn:hover{background:#1d4ed8}
 
-/* \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
-   STEP CARDS \u2014 Simulated Voltmasters UI
-   \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550 */
+/* ══════════════════════════════════════
+   STEP CARDS — Simulated Voltmasters UI
+   ══════════════════════════════════════ */
 .step{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:1.2rem 1.4rem;margin-bottom:1rem;display:flex;flex-wrap:wrap;gap:.5rem .8rem;align-items:flex-start;box-shadow:0 1px 3px rgba(0,0,0,.04)}
 .step-num{width:34px;height:34px;border-radius:50%;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.88rem;flex-shrink:0;box-shadow:0 2px 6px rgba(37,99,235,.25)}
 .step-title{font-weight:700;font-size:.92rem;flex:1;min-width:200px;padding-top:6px}
 
-/* VM Path bar \u2014 prominent blue breadcrumb */
+/* VM Path bar — prominent blue breadcrumb */
 .step-location{width:100%;font-size:.74rem;color:var(--accent);font-weight:600;padding:.4rem .8rem .4rem 42px;margin:-.1rem 0 .6rem;background:rgba(37,99,235,.05);border-radius:6px;border:1px solid rgba(37,99,235,.15);display:flex;align-items:center;gap:.3rem}
-.step-location::before{content:'\ud83d\udccd';font-size:.8rem}
+.step-location::before{content:'📍';font-size:.8rem}
 
 .step-desc{width:100%;font-size:.78rem;color:var(--text2);padding-left:42px;margin-bottom:.5rem}
 
-/* Field Grid \u2014 simulated VM input fields */
+/* Field Grid — simulated VM input fields */
 .field-grid{width:100%;display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:.4rem;padding-left:42px}
 
-/* Individual field row \u2014 looks like a VM form field */
+/* Individual field row — looks like a VM form field */
 .field-row{display:flex;justify-content:space-between;align-items:center;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:.5rem .8rem;transition:border-color .15s}
 .field-row:hover{border-color:var(--accent)}
 .field-label{font-size:.76rem;color:var(--text2);font-weight:500;flex:1;min-width:0}
 .field-value{font-size:.82rem;font-weight:600;flex-shrink:0;max-width:55%}
 
-/* The value inside the field \u2014 simulated input box */
+/* The value inside the field — simulated input box */
 .field-value code{
   background:var(--vm-input-bg);
   color:var(--accent);
@@ -696,9 +717,9 @@ tr:nth-child(even){background:var(--row2)} tr:nth-child(odd){background:var(--ro
 .step .alert{width:100%;margin-left:42px}
 .step table{width:calc(100% - 42px);margin-left:42px}
 
-/* \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
+/* ══════════════════════════════════════
    PRINT STYLES
-   \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550 */
+   ══════════════════════════════════════ */
 @media print{
   .print-btn{display:none!important}
   body{background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}
@@ -718,5 +739,5 @@ tr:nth-child(even){background:var(--row2)} tr:nth-child(odd){background:var(--ro
 
 function getSeasonStartDate(season) {
   const dates = { 'ALTA': '1 Enero / 1 Julio', 'MEDIA_ALTA': '1 Marzo / 1 Noviembre', 'MEDIA': '1 Junio', 'BAJA': '1 Abril' };
-  return dates[season] || '\u2014';
+  return dates[season] || '—';
 }
