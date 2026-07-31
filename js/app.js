@@ -10,19 +10,19 @@
  */
 
 import { deriveBaseConfig, generateAlerts } from './rules.js';
-import { analyzeMonthly, analyzePeriods, analyzeReserveNeeds, generateCalendar, generateScheduleChanges } from './analyzer.js';
+import { analyzeMonthly, analyzePeriods, analyzeReserveNeeds, generateCalendar, generateScheduleChanges, analyzeImportLimit } from './analyzer.js';
 import { renderReport, getReportCSS } from './renderer.js';
 
 
-// ═══════════════════════════════════════════
+// ═════════════════════════════════════════════
 // STATE
-// ═══════════════════════════════════════════
-const state = { simConfig: null, payload: null, csvRows: null };
+// ═════════════════════════════════════════════
+const state = { simConfig: null, payload: null, csvRows: null, facturacionRows: null };
 
 
-// ═══════════════════════════════════════════
+// ═════════════════════════════════════════════
 // CSV PARSER
-// ═══════════════════════════════════════════
+// ═════════════════════════════════════════════
 
 function parseCSV(text) {
   const lines = text.trim().split('\n');
@@ -45,11 +45,39 @@ function parseCSV(text) {
 }
 
 
-// ═══════════════════════════════════════════
+// ═════════════════════════════════════════════
 // PIPELINE: GENERATE JSON INTERMEDIATE (GAP 7)
-// ═══════════════════════════════════════════
+// ═════════════════════════════════════════════
 
-function generateIntermediateJSON(simConfig, payload, csvRows) {
+function extractPeajesCargosFromBilling(facturacionRows) {
+  if (!facturacionRows || facturacionRows.length === 0) return null;
+
+  // Group by period, take first non-zero value for each
+  const peajes = {};
+  const cargos = {};
+  for (const row of facturacionRows) {
+    const p = row.Periodo;
+    if (!p || !p.startsWith('P')) continue;
+    if (peajes[p] === undefined) {
+      peajes[p] = row.Peaje_Energia_EUR_kWh || 0;
+      cargos[p] = row.Cargo_Energia_EUR_kWh || 0;
+    }
+  }
+  if (Object.keys(peajes).length === 0) return null;
+  return { peajes, cargos };
+}
+
+
+function generateIntermediateJSON(simConfig, payload, csvRows, facturacionRows) {
+  // 0. Extract peajes/cargos from billing CSV (most accurate source)
+  const billingATR = extractPeajesCargosFromBilling(facturacionRows);
+  if (billingATR) {
+    // Inject into simConfig so deriveFixedPrices can use them
+    if (!simConfig.contrato_electrico) simConfig.contrato_electrico = {};
+    simConfig.contrato_electrico.peajes_energia = billingATR.peajes;
+    simConfig.contrato_electrico.cargos_energia = billingATR.cargos;
+  }
+
   // 1. Rules: derive base config
   const baseConfig = deriveBaseConfig(simConfig, payload);
 
@@ -68,6 +96,21 @@ function generateIntermediateJSON(simConfig, payload, csvRows) {
     calendar = generateCalendar(monthly, baseConfig);
     periodData = analyzePeriods(csvRows);
     reserveData = analyzeReserveNeeds(csvRows, capUtil, batteryConfig);
+
+    // Análisis 5: Import limit basado en curvas reales
+    const importLimitFromCurves = analyzeImportLimit(csvRows, {
+      capacidad_kwh: simConfig.bateria?.capacidad_kwh || 0,
+      soc_min_pct: simConfig.bateria?.soc_min_pct || 10,
+    });
+    if (importLimitFromCurves) {
+      baseConfig.vm_import_limit = importLimitFromCurves.recommendation;
+      baseConfig.vm_import_limit_from_curves = true;
+      baseConfig.vm_import_limit_analysis = importLimitFromCurves;
+      baseConfig.vm_import_limit_reason = `Basado en an\u00e1lisis de ${importLimitFromCurves.effectiveEvents} eventos de peak shaving con SoC disponible. `
+        + `La bater\u00eda mantiene el pico por debajo de ${importLimitFromCurves.effective_p90} kW el 90% del tiempo `
+        + `y por debajo de ${importLimitFromCurves.effective_p95} kW el 95% del tiempo.`;
+      baseConfig.vm_import_limit_warning = false; // Data-driven = confident
+    }
   }
 
   // 3. Schedule changes (CNMC)
@@ -95,20 +138,21 @@ function generateIntermediateJSON(simConfig, payload, csvRows) {
     periodData,
     reserveData,
     scheduleData,
+    importLimitAnalysis: baseConfig.vm_import_limit_analysis || null,
     alerts,
   };
 }
 
 
-// ═══════════════════════════════════════════
+// ═════════════════════════════════════════════
 // PROCESS DATA & RENDER
-// ═══════════════════════════════════════════
+// ═════════════════════════════════════════════
 
 function processData() {
   if (!state.simConfig) return;
 
   // Generate JSON intermediate (GAP 7)
-  const jsonData = generateIntermediateJSON(state.simConfig, state.payload, state.csvRows);
+  const jsonData = generateIntermediateJSON(state.simConfig, state.payload, state.csvRows, state.facturacionRows);
 
   // Log JSON intermediate for debugging / future API use
   console.log('[GAP 7] JSON intermedio generado:', jsonData);
@@ -116,7 +160,7 @@ function processData() {
   // Render report HTML
   const reportBody = renderReport(jsonData);
   const fullHTML = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Configuración Voltmasters — ${jsonData.baseConfig.nombre}</title>
+<title>Configuraci\u00f3n Voltmasters \u2014 ${jsonData.baseConfig.nombre}</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 <style>${getReportCSS()}</style></head><body>
 <div class="container">${reportBody}</div>
@@ -132,7 +176,7 @@ function processData() {
   const btnDownload = document.getElementById('btn-download');
   btnDownload.disabled = false;
   btnDownload.onclick = () => {
-    const safeName = (jsonData.baseConfig.nombre || 'proyecto').replace(/[^a-zA-Z0-9áéíóúñ_-]/g, '_').substring(0, 60);
+    const safeName = (jsonData.baseConfig.nombre || 'proyecto').replace(/[^a-zA-Z0-9\u00e1\u00e9\u00ed\u00f3\u00fa\u00f1_-]/g, '_').substring(0, 60);
     const blob = new Blob([fullHTML], { type: 'text/html;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -145,7 +189,7 @@ function processData() {
   if (btnJson) {
     btnJson.disabled = false;
     btnJson.onclick = () => {
-      const safeName = (jsonData.baseConfig.nombre || 'proyecto').replace(/[^a-zA-Z0-9áéíóúñ_-]/g, '_').substring(0, 60);
+      const safeName = (jsonData.baseConfig.nombre || 'proyecto').replace(/[^a-zA-Z0-9\u00e1\u00e9\u00ed\u00f3\u00fa\u00f1_-]/g, '_').substring(0, 60);
       const blob = new Blob([JSON.stringify(jsonData, null, 2)], { type: 'application/json;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -156,9 +200,9 @@ function processData() {
 }
 
 
-// ═══════════════════════════════════════════
+// ═════════════════════════════════════════════
 // FILE HANDLING
-// ═══════════════════════════════════════════
+// ═════════════════════════════════════════════
 
 async function handleFiles(files) {
   const fileList = Array.from(files);
@@ -171,6 +215,8 @@ async function handleFiles(files) {
       state.payload = JSON.parse(await file.text()); loaded.push('✅ cavo_payload_b2b.json');
     } else if (name.includes('cavo_curvas_netted_bess') && name.endsWith('.csv')) {
       state.csvRows = parseCSV(await file.text()); loaded.push(`✅ Curvas CSV (${state.csvRows.length.toLocaleString()} filas)`);
+    } else if (name.includes('cavo_facturacion') && name.endsWith('.csv')) {
+      state.facturacionRows = parseCSV(await file.text()); loaded.push(`✅ Facturaci\u00f3n CSV (peajes y cargos)`);
     }
   }
   if (loaded.length > 0) {
@@ -186,9 +232,9 @@ async function handleFiles(files) {
 }
 
 
-// ═══════════════════════════════════════════
+// ═════════════════════════════════════════════
 // INIT
-// ═══════════════════════════════════════════
+// ═════════════════════════════════════════════
 
 document.addEventListener('DOMContentLoaded', () => {
   const drop = document.getElementById('drop-zone');
@@ -199,7 +245,7 @@ document.addEventListener('DOMContentLoaded', () => {
   drop.addEventListener('dragleave', e => { e.preventDefault(); e.stopPropagation(); drop.classList.remove('drag-over'); });
   drop.addEventListener('drop', async e => {
     e.preventDefault(); e.stopPropagation(); drop.classList.remove('drag-over');
-    statusEl.innerHTML = '⏳ Escaneando archivos...';
+    statusEl.innerHTML = '⌛ Escaneando archivos...';
     statusEl.className = 'status status-ok';
     statusEl.style.display = '';
 
@@ -229,7 +275,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (files.length > 0) {
       handleFiles(files);
     } else {
-      statusEl.innerHTML = '⚠️ No se pudieron leer los archivos. Usa el botón "Seleccionar carpeta" como alternativa.';
+      statusEl.innerHTML = '⚠️ No se pudieron leer los archivos. Usa el bot\u00f3n "Seleccionar carpeta" como alternativa.';
       statusEl.className = 'status status-warn';
     }
   });
@@ -242,9 +288,9 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 
-// ═══════════════════════════════════════════
+// ═════════════════════════════════════════════
 // FILE SYSTEM HELPERS
-// ═══════════════════════════════════════════
+// ═════════════════════════════════════════════
 
 function entryToFile(fileEntry) {
   return new Promise(resolve => {
