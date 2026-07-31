@@ -1,0 +1,4 @@
+# Legacy monolith files (v1.0 backup — not used)
+/app.js
+/rules.js
+/analyze-test.mjs

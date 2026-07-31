@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Generador Configuración Voltmasters</title>
+  <meta name="description" content="Analiza las curvas de ROI Baterías y genera la configuración Voltmasters necesaria para lograr el ahorro simulado">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="app-header">
+  <h1>⚡ Generador de Configuración Voltmasters</h1>
+  <div class="subtitle">Sube la carpeta de ROI Baterías → obtén la configuración exacta del EMS para lograr el ahorro simulado</div>
+  <div class="branding">CAVO Energías · v2.0 modular</div>
+</header>
+
+<div class="app-container">
+
+  <!-- Upload -->
+  <div class="zone">
+    <div class="drop-zone" id="drop-zone">
+      <div class="drop-icon">📁</div>
+      <div class="drop-text">
+        <strong>Arrastra la carpeta</strong> de salida de ROI Baterías aquí
+      </div>
+      <div class="drop-hint">
+        configuracion_simulacion.json · cavo_payload_b2b.json · cavo_curvas_netted_bess.csv
+      </div>
+    </div>
+    <div class="btn-row" style="margin-top:.8rem;justify-content:center">
+      <button class="btn btn-secondary" onclick="document.getElementById('folder-input').click()">📂 Seleccionar carpeta</button>
+      <button class="btn btn-secondary" onclick="document.getElementById('file-input').click()">📄 Seleccionar archivos</button>
+    </div>
+    <input type="file" id="folder-input" webkitdirectory directory style="display:none">
+    <input type="file" id="file-input" multiple accept=".json,.csv" style="display:none">
+    <div class="status" id="upload-status" style="display:none"></div>
+  </div>
+
+  <!-- Preview + Download -->
+  <div class="zone" id="zone-preview" style="display:none">
+    <div class="zone-hdr">
+      <div class="icon">📋</div>
+      <h2>Configuración Voltmasters Generada</h2>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-primary" id="btn-download" disabled>💾 Descargar Reporte HTML</button>
+      <button class="btn btn-secondary" id="btn-json" disabled>📦 Descargar JSON intermedio</button>
+    </div>
+    <iframe id="report-preview" class="preview-frame" style="display:none;margin-top:1rem"></iframe>
+  </div>
+
+</div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
